@@ -21,6 +21,7 @@
 
 #include "lwip/err.h"
 #include "lwip/sys.h"
+#include "lwip/udp.h"
 
 /* The examples use WiFi configuration that you can set via 'make menuconfig'.
 
@@ -133,16 +134,15 @@ static void printRuntimeStats()
                 // This will always be rounded down to the nearest integer.
                 // ulTotalRunTimeDiv100 has already been divided by 100.
                 ulStatsAsPercentage = pxTaskStatusArray[ x ].ulRunTimeCounter / ulTotalRunTime;
-
                 if( ulStatsAsPercentage > 0UL )
                 {
-                    ESP_LOGI("STAT", "%s\t\t%u\t\t%u%%", pxTaskStatusArray[ x ].pcTaskName, pxTaskStatusArray[ x ].ulRunTimeCounter, ulStatsAsPercentage );
+                    ESP_LOGI("STAT", "%s\t\t%u\t\t%u%%\t%u", pxTaskStatusArray[ x ].pcTaskName, pxTaskStatusArray[ x ].ulRunTimeCounter, ulStatsAsPercentage, pxTaskStatusArray[x].uxCurrentPriority );
                 }
                 else
                 {
                     // If the percentage is zero here then the task has
                     // consumed less than 1% of the total run time.
-                    ESP_LOGI("STAT", "%s\t\t%u\t\t<1%%", pxTaskStatusArray[ x ].pcTaskName, pxTaskStatusArray[ x ].ulRunTimeCounter );
+                    ESP_LOGI("STAT", "%s\t\t%u\t\t<1%%\t%u", pxTaskStatusArray[ x ].pcTaskName, pxTaskStatusArray[ x ].ulRunTimeCounter, pxTaskStatusArray[x].uxCurrentPriority );
                 }
             }
         }
@@ -152,51 +152,105 @@ static void printRuntimeStats()
         ESP_LOGI("STAT", "Stat ends");
     }
 }
-//#define USE_HR_TIMER
-#define USE_HARDWARE_TIMER
+
+#define ENABLE_WIFI
+#define USE_HR_TIMER
+//#define USE_HARDWARE_TIMER
+#define TIMER_GROUP TIMER_GROUP_0
+#define TIMERG TIMERG0
 
 #ifdef USE_HR_TIMER
 #define TIMER_COUNTER_PERIOD (1000)
 #elif defined(USE_HARDWARE_TIMER)
-#define TIMER_COUNTER_PERIOD ((uint64_t)((TIMER_BASE_CLK/1000)/40000))
+#define TIMER_CLOCK_DIVIDER 800
+#define TIMER_COUNTER_PERIOD ((uint64_t)100)
 #endif
 
 static volatile int64_t last_timer_timestamp = 0;
-#define NUM_INTERVALS 256
-static volatile uint32_t intervals[NUM_INTERVALS] = {0};
+static volatile int64_t isr_timestamp = 0;
+#define NUM_INTERVALS 16384
+typedef struct {
+    uint32_t interval;
+    uint32_t delay;
+} IntervalItem;
+static volatile IntervalItem intervals[NUM_INTERVALS] = {0};
 static volatile uint32_t interval_index = 0;
+
+
+#define PLACE_CALLBACK_ON_IRAM
+#ifdef PLACE_CALLBACK_ON_IRAM
+#define CALLBACK_PLACE_ATTR IRAM_ATTR
+#else
+#define CALLBACK_PLACE_ATTR
+#endif
 
 #ifdef USE_HARDWARE_TIMER
 static IRAM_ATTR void hardware_timer_isr(void* arg)
 {
-    uint32_t intr_status = TIMERG0.int_st_timers.val;
-    TIMERG0.hw_timer[0].update = 1;
-    if( (intr_status & 1) == 0 ) {
+    if( TIMERG.int_raw.t0 == 0 ) {
         return;
     }
-    TIMERG0.int_clr_timers.t0 = 1;
-    TIMERG0.int_clr_timers.t1 = 1;
-    TIMERG0.hw_timer[0].alarm_high = (uint32_t) (TIMER_COUNTER_PERIOD >> 32);
-    TIMERG0.hw_timer[0].alarm_low = (uint32_t) TIMER_COUNTER_PERIOD;
-    
-    TaskHandle_t timer_task = (TaskHandle_t)arg;
-    xTaskNotifyFromISR(timer_task, 1, eSetBits, NULL);
+    // Clear interrupt flag.
+    TIMERG.int_clr_timers.t0 = 1;
+    // Clear timer counter
+    TIMERG.hw_timer[0].load_high = 0;
+    TIMERG.hw_timer[0].load_low = 0;
+    TIMERG.hw_timer[0].reload = 0;  // set counter to zero.
+
+    int64_t timestamp = esp_timer_get_time();
 
     // Re-enable timer alarm
-    TIMERG0.hw_timer[0].config.alarm_en = TIMER_ALARM_EN;
+    TIMERG.hw_timer[0].alarm_high = (uint32_t) (TIMER_COUNTER_PERIOD >> 32);
+    TIMERG.hw_timer[0].alarm_low = (uint32_t) TIMER_COUNTER_PERIOD;
+    TIMERG.hw_timer[0].config.alarm_en = TIMER_ALARM_EN;
+    // Set timestamp
+    if( interval_index < NUM_INTERVALS && intervals[interval_index].interval == 0 ) {
+        isr_timestamp = timestamp;
+        intervals[interval_index].interval = timestamp - last_timer_timestamp;
+    }
+    last_timer_timestamp = timestamp;
+
+    // Notify
+    TaskHandle_t timer_task = (TaskHandle_t)arg;
+    xTaskNotifyFromISR(timer_task, 1, eSetBits, NULL);
+    portYIELD_FROM_ISR();   // In FreeRTOS, the task currently running is not yielded even if a notification is sent to another task. Thus we have to yield the current task explicitly by calling portYIELD_FROM_ISR().
 }
 
-static IRAM_ATTR void timer_callback(void* arg);
-static IRAM_ATTR void timer_task(void* arg)
+static CALLBACK_PLACE_ATTR void timer_task(void* arg)
 {
+    timer_config_t timer_config = {
+        .alarm_en = true,
+        .counter_en = false,
+        .intr_type = TIMER_INTR_LEVEL,
+        .counter_dir = TIMER_COUNT_UP,
+        .auto_reload = true,
+        .divider = TIMER_CLOCK_DIVIDER,
+    };
+    ESP_ERROR_CHECK(timer_init(TIMER_GROUP, 0, &timer_config));
+    ESP_ERROR_CHECK(timer_set_counter_value(TIMER_GROUP, 0, 0));
+    ESP_ERROR_CHECK(timer_set_alarm_value(TIMER_GROUP, 0, TIMER_COUNTER_PERIOD));
+    ESP_ERROR_CHECK(timer_isr_register(TIMER_GROUP, 0, hardware_timer_isr, xTaskGetCurrentTaskHandle(), ESP_INTR_FLAG_IRAM | ESP_INTR_FLAG_LEVEL3, NULL));
+    ESP_ERROR_CHECK(timer_start(TIMER_GROUP, 0));
+
     while(true) {
         uint32_t notification_value = 0;
         xTaskNotifyWait(0, 1, &notification_value, portMAX_DELAY);
-        timer_callback(arg);
+        TaskHandle_t main_task = (TaskHandle_t)arg;
+        int64_t timestamp = esp_timer_get_time();
+        
+        if( interval_index < NUM_INTERVALS ) {
+            if( intervals[interval_index].interval != 0 ) {
+                intervals[interval_index].delay = (uint32_t)(timestamp - isr_timestamp);
+                interval_index++;
+            }
+        }
+        else {
+            xTaskNotify(main_task, 1, eSetBits);
+        }
     }
 }
-#endif
 
+#else
 static IRAM_ATTR void timer_callback(void* arg)
 {    
     TaskHandle_t main_task = (TaskHandle_t)arg;
@@ -205,7 +259,7 @@ static IRAM_ATTR void timer_callback(void* arg)
     if( last_timer_timestamp > 0 ) {
         if( interval_index < NUM_INTERVALS ) {
             if( period < 0xffffffffll ) {
-                intervals[interval_index] = (uint32_t)period;
+                intervals[interval_index].interval = (uint32_t)period;
                 interval_index++;
             }
         }
@@ -214,6 +268,19 @@ static IRAM_ATTR void timer_callback(void* arg)
         }
     }
     last_timer_timestamp = timestamp;
+}
+#endif
+
+static struct udp_pcb* udp_context = NULL;
+static void udp_recv_handler(void* arg, struct udp_pcb* pcb, struct pbuf* p, const ip_addr_t* addr, uint16_t port)
+{
+    pbuf_free(p);
+}
+static void initialize_udp()
+{
+    udp_context = udp_new();
+    udp_bind(udp_context, IPADDR_ANY, 10000);
+    udp_recv(udp_context, &udp_recv_handler, NULL);
 }
 
 void app_main()
@@ -225,9 +292,11 @@ void app_main()
       ret = nvs_flash_init();
     }
     ESP_ERROR_CHECK(ret);
-    
+#ifdef ENABLE_WIFI
     ESP_LOGI(TAG, "ESP_WIFI_MODE_STA");
     wifi_init_sta();
+    initialize_udp();
+#endif
 
 #ifdef USE_HR_TIMER
     esp_timer_handle_t handle = NULL;
@@ -241,20 +310,7 @@ void app_main()
     ESP_ERROR_CHECK(esp_timer_start_periodic(handle, 1000));
 #elif defined(USE_HARDWARE_TIMER)
     TaskHandle_t timer_task_handle = NULL;
-    xTaskCreatePinnedToCore(timer_task, "HW_TIMER", 4096, xTaskGetCurrentTaskHandle(), 9, &timer_task_handle, APP_CPU_NUM);
-    timer_config_t timer_config = {
-        .alarm_en = true,
-        .counter_en = false,
-        .intr_type = TIMER_INTR_LEVEL,
-        .counter_dir = TIMER_COUNT_UP,
-        .auto_reload = true,
-        .divider = 40000,
-    };
-    ESP_ERROR_CHECK(timer_init(TIMER_GROUP_0, 0, &timer_config));
-    ESP_ERROR_CHECK(timer_set_counter_value(TIMER_GROUP_0, 0, 0));
-    ESP_ERROR_CHECK(timer_set_alarm_value(TIMER_GROUP_0, 0, TIMER_COUNTER_PERIOD));
-    ESP_ERROR_CHECK(timer_isr_register(TIMER_GROUP_0, 0, hardware_timer_isr, timer_task_handle, ESP_INTR_FLAG_IRAM, NULL));
-    ESP_ERROR_CHECK(timer_start(TIMER_GROUP_0, 0));
+    xTaskCreatePinnedToCore(timer_task, "HW_TIMER", 4096, xTaskGetCurrentTaskHandle(), 23, &timer_task_handle, APP_CPU_NUM);
 #endif
     while(true) {
         uint32_t notification_value = 0;
@@ -263,25 +319,41 @@ void app_main()
             continue;
         }
 
-        float sum_squared = 0;
-        float sum = 0;
-        uint32_t min = 0xffffffffu;
-        uint32_t max = 0;
+        float interval_sum_squared = 0;
+        float interval_sum = 0;
+        uint32_t interval_min = 0xffffffffu;
+        uint32_t interval_max = 0;
+        float delay_sum_squared = 0;
+        float delay_sum = 0;
+        uint32_t delay_min = 0xffffffffu;
+        uint32_t delay_max = 0;
         for(uint32_t i = 0; i < NUM_INTERVALS; i++) {
-            uint32_t x = intervals[i];
-            if( x < min ) {
-                min = x;
+            {
+                uint32_t x = intervals[i].delay;
+                float v = x;
+                delay_min = x < delay_min ? x : delay_min;
+                delay_max = x > delay_max ? x : delay_max;
+                delay_sum += v;
+                delay_sum_squared += v*v;
             }
-            if( max < x ) {
-                max = x;
+            {
+                uint32_t x = intervals[i].interval;
+                float v = x;
+                interval_min = x < interval_min ? x : interval_min;
+                interval_max = x > interval_max ? x : interval_max;
+                interval_sum += v;
+                interval_sum_squared += v*v;
             }
-            float v = x;
-            sum += v;
-            sum_squared += v*v;
         }
+        float delay_average     = delay_sum/NUM_INTERVALS;
+        float delay_variance    = delay_sum_squared/NUM_INTERVALS - delay_average*delay_average;
+        float interval_average  = interval_sum/NUM_INTERVALS;
+        float interval_variance = interval_sum_squared/NUM_INTERVALS - interval_average*interval_average;
+
+        ESP_LOGI("TIMER", "delay:    min = %u, max = %u, average: %f, variance: %f", delay_min, delay_max, delay_average, delay_variance);
+        ESP_LOGI("TIMER", "interval: min = %u, max = %u, average: %f, variance: %f", interval_min, interval_max, interval_average, interval_variance);
+        printRuntimeStats();
+        memset(intervals, 0, sizeof(intervals));
         interval_index = 0;
-        float average = sum/NUM_INTERVALS;
-        float variance = sum_squared/NUM_INTERVALS - average*average;
-        ESP_LOGI("TIMER", "min = %u, max = %u, average: %f, variance: %f", min, max, average, variance);
     }
 }
