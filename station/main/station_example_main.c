@@ -153,16 +153,34 @@ static void printRuntimeStats()
     }
 }
 
-#define ENABLE_WIFI
+#if CONFIG_TARGET_TIMER_TASK_DELAY
+#define USE_TASK_DELAY
+#elif CONFIG_TARGET_TIMER_HARDWARE
+#define USE_HARDWARE_TIMER
+#elif CONFIG_TARGET_TIMER_HIGH_RES
 #define USE_HR_TIMER
-//#define USE_HARDWARE_TIMER
+#endif
+#if CONFIG_TARGET_HARDWARE_TIMER_GROUP_0
 #define TIMER_GROUP TIMER_GROUP_0
 #define TIMERG TIMERG0
+#elif CONFIG_TARGET_HARDWARE_TIMER_GROUP_1
+#define TIMER_GROUP TIMER_GROUP_1
+#define TIMERG TIMERG1
+#endif
 
-#ifdef USE_HR_TIMER
-#define TIMER_COUNTER_PERIOD (1000)
+#if CONFIG_ENABLE_WIFI
+#define ENABLE_WIFI
+#endif
+
+#if CONFIG_PLACE_CALLBACK_ON_IRAM
+#define PLACE_CALLBACK_ON_IRAM
+#endif
+
+
+#if defined(USE_HR_TIMER) || defined(USE_TASK_DELAY)
+#define TIMER_COUNTER_PERIOD (500)
 #elif defined(USE_HARDWARE_TIMER)
-#define TIMER_CLOCK_DIVIDER 800
+#define TIMER_CLOCK_DIVIDER 400
 #define TIMER_COUNTER_PERIOD ((uint64_t)100)
 #endif
 
@@ -176,8 +194,6 @@ typedef struct {
 static volatile IntervalItem intervals[NUM_INTERVALS] = {0};
 static volatile uint32_t interval_index = 0;
 
-
-#define PLACE_CALLBACK_ON_IRAM
 #ifdef PLACE_CALLBACK_ON_IRAM
 #define CALLBACK_PLACE_ATTR IRAM_ATTR
 #else
@@ -249,8 +265,29 @@ static CALLBACK_PLACE_ATTR void timer_task(void* arg)
         }
     }
 }
+#elif USE_TASK_DELAY
 
-#else
+static CALLBACK_PLACE_ATTR void timer_task(void* arg)
+{
+    while(true) {
+        TaskHandle_t main_task = (TaskHandle_t)arg;
+        int64_t timestamp = esp_timer_get_time();
+        int64_t period = timestamp - last_timer_timestamp;
+        if( last_timer_timestamp > 0 ) {
+            if( interval_index < NUM_INTERVALS ) {
+                if( period < 0xffffffffll ) {
+                    intervals[interval_index].interval = (uint32_t)period;
+                    interval_index++;
+                }
+            }
+            else {
+                xTaskNotify(main_task, 1, eSetBits);
+            }
+        }
+        last_timer_timestamp = timestamp;
+    }
+}
+#elif USE_HR_TIMER
 static IRAM_ATTR void timer_callback(void* arg)
 {    
     TaskHandle_t main_task = (TaskHandle_t)arg;
@@ -296,9 +333,11 @@ void app_main()
     ESP_LOGI(TAG, "ESP_WIFI_MODE_STA");
     wifi_init_sta();
     initialize_udp();
+    ESP_LOGI(TAG, "Waiting AP connection...");
+    xEventGroupWaitBits(s_wifi_event_group, WIFI_CONNECTED_BIT, 0, 0, portMAX_DELAY);
 #endif
-
 #ifdef USE_HR_TIMER
+    ESP_LOGI(TAG, "Use high resolution timer");
     esp_timer_handle_t handle = NULL;
     esp_timer_create_args_t create_args = {
         .callback = timer_callback,
@@ -309,8 +348,9 @@ void app_main()
     ESP_ERROR_CHECK(esp_timer_create(&create_args, &handle));
     ESP_ERROR_CHECK(esp_timer_start_periodic(handle, 1000));
 #elif defined(USE_HARDWARE_TIMER)
+    ESP_LOGI(TAG, "Use hardware timer, priority=%d, cpu=%d", CONFIG_HARDWARE_TIMER_TASK_PRIORITY, CONFIG_HARDWARE_TIMER_TASK_CPU);
     TaskHandle_t timer_task_handle = NULL;
-    xTaskCreatePinnedToCore(timer_task, "HW_TIMER", 4096, xTaskGetCurrentTaskHandle(), 23, &timer_task_handle, APP_CPU_NUM);
+    xTaskCreatePinnedToCore(timer_task, "HW_TIMER", 4096, xTaskGetCurrentTaskHandle(), CONFIG_HARDWARE_TIMER_TASK_PRIORITY, &timer_task_handle, CONFIG_HARDWARE_TIMER_TASK_CPU);
 #endif
     while(true) {
         uint32_t notification_value = 0;
@@ -319,6 +359,18 @@ void app_main()
             continue;
         }
 
+#if CONFIG_DUMP_RAW_DATA
+        esp_log_level_set("*", ESP_LOG_NONE);
+        printf("DUMP BEGIN:\n");
+        for(uint32_t i = 0; i < NUM_INTERVALS; i++) {
+            printf("%d,%d,%d\n", i, intervals[i].delay, intervals[i].interval);
+            if( (i & 0xfff) == 0 ) {
+                vTaskDelay(1);
+            }
+        }
+        printf("DUMP END:\n");
+        esp_log_level_set("*", ESP_LOG_INFO);
+#else 
         float interval_sum_squared = 0;
         float interval_sum = 0;
         uint32_t interval_min = 0xffffffffu;
@@ -353,6 +405,7 @@ void app_main()
         ESP_LOGI("TIMER", "delay:    min = %u, max = %u, average: %f, variance: %f", delay_min, delay_max, delay_average, delay_variance);
         ESP_LOGI("TIMER", "interval: min = %u, max = %u, average: %f, variance: %f", interval_min, interval_max, interval_average, interval_variance);
         printRuntimeStats();
+#endif
         memset(intervals, 0, sizeof(intervals));
         interval_index = 0;
     }

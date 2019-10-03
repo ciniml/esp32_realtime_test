@@ -17,4 +17,44 @@ menu "Example Configuration"
         default 5
         help
             Set the Maximum retry to avoid station reconnecting to the AP unlimited when the AP is really inexistent.
+    config ENABLE_WIFI
+        bool "Enable Wi-Fi"
+        default y
+
+    choice TARGET_TIMER
+        prompt "Target timer implementation to measure performance"
+        help
+            Target timer implementation to measure performance.
+        config TARGET_TIMER_HARDWARE
+            bool "Hardware Timer"
+        config TARGET_TIMER_HIGH_RES
+            bool "High Resolution Timer"
+    endchoice
+    choice TARGET_HARDWARE_TIMER_GROUP
+        prompt "Target hardware timer group"
+        depends on TARGET_TIMER_HARDWARE
+        config TARGET_HARDWARE_TIMER_GROUP_0
+            bool "GROUP0"
+        config TARGET_HARDWARE_TIMER_GROUP_1
+            bool "GROUP1"
+    endchoice
+
+    config PLACE_CALLBACK_ON_IRAM
+        bool "Place callbacks on IRAM"
+        default y
+
+    config HARDWARE_TIMER_TASK_PRIORITY
+        int "Hardware timer task priority"
+        depends on TARGET_TIMER_HARDWARE
+        default 24
+
+    config HARDWARE_TIMER_TASK_CPU
+        int "Hardware timer task CPU"
+        depends on TARGET_TIMER_HARDWARE
+        range 0 1
+        default 1
+    
+    config DUMP_RAW_DATA
+        bool "Dump raw measurement data"
+        default n
 endmenu

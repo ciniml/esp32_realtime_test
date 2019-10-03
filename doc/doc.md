@@ -197,9 +197,11 @@ ESP_TIMER_TASK を指定した場合は、割り込みハンドラ内でコー�
 このため、無線通信機能が有効な場合、高分解能タイマのコールバック関数を呼び出しタイミングが大きくずれる場合があります。
 
 対策としては、
+
 * コールバック関数実行用タスクの優先度を無線通信処理より高くする
 * コールバック関数実行用タスクをAPP_CPUで実行する
 * 割り込みハンドラで直接コールバック関数を実行する
+
 といった方法が考えられます。
 
 ただし、現時点のESP-IDF v3.3では、コールバック関数実行用タスクの優先度を変更する機能や、コールバック関数を割り込み関数から直接実行する機能は実装されていません。
@@ -210,23 +212,149 @@ ESP_TIMER_TASK を指定した場合は、割り込みハンドラ内でコー�
 ### 実験の内容
 
 前述の実験で、無線通信機能が有効な場合、現状のESP-IDFの高分解能タイマはあまり使い物にならないということがわかりました。
+そこで、代わりにハードウェア・タイマを直接使って周期処理を実装します。
 
-代わりにハードウェア・タイマを直接使った場合の性能を測定します。
+| パラメータ名 |  マクロ名 | 値 | 
+|---|---|---|
+| タイマ処理タスクの優先度 | CONFIG_HARDWARE_TIMER_TASK_PRIORITY | 22, 23, 24 |
+| タイマ処理タスクのCPU | CONFIG_HARDWARE_TIMER_TASK_CPU | 0, 1 |
 
-実験のパラメータリスト
+```c
+#if CONFIG_TARGET_HARDWARE_TIMER_GROUP_0
+#define TIMER_GROUP TIMER_GROUP_0
+#define TIMERG TIMERG0
+#elif CONFIG_TARGET_HARDWARE_TIMER_GROUP_1
+#define TIMER_GROUP TIMER_GROUP_1
+#define TIMERG TIMERG1
+#endif
+
+#define TIMER_CLOCK_DIVIDER 400
+#define TIMER_COUNTER_PERIOD ((uint64_t)100)
+#endif
+
+static volatile int64_t last_timer_timestamp = 0;
+static volatile int64_t isr_timestamp = 0;
+#define NUM_INTERVALS 16384
+typedef struct {
+    uint32_t interval;  // 計測した周期
+    uint32_t delay;     // 割り込みからタイマ処理タスクまでの遅延
+} IntervalItem;
+static volatile IntervalItem intervals[NUM_INTERVALS] = {0};
+static volatile uint32_t interval_index = 0;
+
+// 割り込みハンドラ
+static IRAM_ATTR void hardware_timer_isr(void* arg)
+{
+  if( TIMERG.int_raw.t0 == 0 ) {
+    return;
+  }
+  // 割り込みフラグをクリア
+  TIMERG.int_clr_timers.t0 = 1;
+  // カウンターをクリア
+  TIMERG.hw_timer[0].load_high = 0;
+  TIMERG.hw_timer[0].load_low = 0;
+  TIMERG.hw_timer[0].reload = 0;  // set counter to zero.
+
+  // タイムスタンプを取得
+  int64_t timestamp = esp_timer_get_time();
+  // 次の割り込み時刻を設定
+  TIMERG.hw_timer[0].alarm_high = (uint32_t) (TIMER_COUNTER_PERIOD >> 32);
+  TIMERG.hw_timer[0].alarm_low = (uint32_t) TIMER_COUNTER_PERIOD;
+  TIMERG.hw_timer[0].config.alarm_en = TIMER_ALARM_EN;
+  // タイムスタンプを保存
+  if( interval_index < NUM_INTERVALS && intervals[interval_index].interval == 0 ) {
+    isr_timestamp = timestamp;
+    intervals[interval_index].interval = timestamp - last_timer_timestamp;
+  }
+  last_timer_timestamp = timestamp;
+
+  // 周期処理を行うタスクに通知
+  TaskHandle_t timer_task = (TaskHandle_t)arg;
+  xTaskNotifyFromISR(timer_task, 1, eSetBits, NULL);
+  // スケジューラ実行
+  portYIELD_FROM_ISR();
+}
+
+// タイマー処理タスクの本体
+static CALLBACK_PLACE_ATTR void timer_task(void* arg)
+{
+  // タイマー初期化
+  timer_config_t timer_config = {
+    .alarm_en = true,
+    .counter_en = false,
+    .intr_type = TIMER_INTR_LEVEL,
+    .counter_dir = TIMER_COUNT_UP,
+    .auto_reload = true,
+    .divider = TIMER_CLOCK_DIVIDER,
+  };
+  ESP_ERROR_CHECK(timer_init(TIMER_GROUP, 0, &timer_config));
+  ESP_ERROR_CHECK(timer_set_counter_value(TIMER_GROUP, 0, 0));
+  ESP_ERROR_CHECK(timer_set_alarm_value(TIMER_GROUP, 0, TIMER_COUNTER_PERIOD));
+  ESP_ERROR_CHECK(timer_isr_register(TIMER_GROUP, 0, hardware_timer_isr, 
+                  xTaskGetCurrentTaskHandle(), ESP_INTR_FLAG_IRAM, NULL));
+  ESP_ERROR_CHECK(timer_start(TIMER_GROUP, 0));
+
+  while(true) {
+    uint32_t notification_value = 0;
+    // 割り込みハンドラからの通知を待つ
+    xTaskNotifyWait(0, 1, &notification_value, portMAX_DELAY);
+    TaskHandle_t main_task = (TaskHandle_t)arg;
+    int64_t timestamp = esp_timer_get_time();
+    // 割り込みハンドラからの遅延時間を計算して保存
+    if( interval_index < NUM_INTERVALS ) {
+      if( intervals[interval_index].interval != 0 ) {
+        intervals[interval_index].delay = (uint32_t)(timestamp - isr_timestamp);
+        interval_index++;
+      }
+    }
+    else {
+      // NUM_INTERVALS回計測したらメイン・タスクに通知
+      xTaskNotify(main_task, 1, eSetBits);
+    }
+  }
+}
+
+void app_main()
+{
+    // (省略)
+
+    ESP_LOGI(TAG, "ESP_WIFI_MODE_STA");
+    wifi_init_sta();
+    initialize_udp();
+    ESP_LOGI(TAG, "Waiting AP connection...");
+    xEventGroupWaitBits(s_wifi_event_group, WIFI_CONNECTED_BIT, 0, 0, portMAX_DELAY);
+
+    // タイマー処理タスクを起動
+    ESP_LOGI(TAG, "Use hardware timer, priority=%d, cpu=%d", CONFIG_HARDWARE_TIMER_TASK_PRIORITY, CONFIG_HARDWARE_TIMER_TASK_CPU);
+    TaskHandle_t timer_task_handle = NULL;
+    xTaskCreatePinnedToCore(timer_task, "HW_TIMER", 4096, xTaskGetCurrentTaskHandle(),
+      CONFIG_HARDWARE_TIMER_TASK_PRIORITY, &timer_task_handle, CONFIG_HARDWARE_TIMER_TASK_CPU); // (1)
+    
+    while(true) {
+        uint32_t notification_value = 0;
+        xTaskNotifyWait(0, 1, &notification_value, portMAX_DELAY);
+        // 省略
+    }
+}
+```
+
+まず、 `xTaskCreatePinnedToCore` を呼び出して、`timer_task` 関数を実行するタイマ処理タスクを起動します。
+この時のタスクの優先度と実行CPUは、実験のパラメータに応じて変更します。(1)
+
+タイマ処理タスクの先頭で、 `timer_` で始まるESP-IDFのAPIを呼び出して、ハードウェア・タイマを初期化します。
+
 
 ### 実験の結果
 
 ### 結果から見える方針
 
 実験結果より、タイミングがシビアな処理は、割り込みハンドラ内で処理をしてしまうのが良いことがわかります。
+ただし、割り込みハンドラであまり長い処理を実行すると、他の割り込み処理に影響がでますので、必要最小限の処理のみ行うようにします。
 
-ただし、割り込みハンドラであまり長い処理を実行すると、外の割り込み処理に影響がでます。
-時間の正確さが必要な処理を割り込みハンドラ内で行い、残りの処理を優先度の高い処理で実行するようにします
-このとき、残りの処理はAPP_CPUで実行しているタスクで実行するのが良いです。
-
-
-
+例えば、周期的にADCから値を読み取り何かしらの処理をする場合、ADCの変換を開始するタイミングがばらつくと測定結果に影響します。
+一方、ADCの変換結果を使った計算処理は、平均的にADCのサンプリングレートと同じか速いレートで処理できれば良いとします。
+こういった場合、割り込みハンドラ内でADCの変換開始処理を行い、残りの計算処理を専用のタスクで実行するようにします。
+このとき、計算処理はAPP_CPUで実行しているタスクで実行し、確実に必要な処理レートを下回らないようにします。
 
 # 参考文献
 
