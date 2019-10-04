@@ -149,6 +149,14 @@ ESP32にはいくつかのハードウェア･タイマがあります。その
 
 ハードウェア･タイマは高分解能タイマと異なり、直接割り込み処理を扱う必要がありますので、高分解能タイマよりも扱いにくい半面、細かな設定を行えます。
 
+## 手法ごとの周期処理性能の確認
+
+### 無線通信プログラム
+
+実験のために無線LANのアクセスポイントとして機能し、UDPで無線LANのクライアントに一定レートでデータを送信し続けるプログラムを作成します。
+
+
+
 ## 実験その1: 高分解能タイマの性能
 
 ### 実験プログラム概要
@@ -182,7 +190,8 @@ ESP-IDFの高分解能タイマの処理の周期の正確さがどれくらい�
 
 ESP-IDFの高分解能タイマは、32bit ハードウェア・タイマとソフトウェアの64ビットカウンタを組み合わせて、1[us]分解能の64bitタイマを実装しています。
 
-登録された時刻に割り込みが発生するように調整
+高分解能タイマ・モジュールは、処理を行う時刻が早い順のリストを持っています。ある時刻に処理を実行するタイマを追加すると、処理を実行するために必要な情報がリストに登録されます。
+また、追加した処理の実行予定時刻がリストの中で最も早い場合、その時刻にハードウェア・タイマの割り込みが発生するように設定します。
 
 割り込みハンドラから呼び出される関数では、 `esp_timer_create_args_t` の `dispatch_method` フィールドに指定した値に応じた方法で、`callback`フィールドに指定したコールバック関数を呼び出します。
 
@@ -218,6 +227,7 @@ ESP_TIMER_TASK を指定した場合は、割り込みハンドラ内でコー�
 |---|---|---|
 | タイマ処理タスクの優先度 | CONFIG_HARDWARE_TIMER_TASK_PRIORITY | 22, 23, 24 |
 | タイマ処理タスクのCPU | CONFIG_HARDWARE_TIMER_TASK_CPU | 0, 1 |
+| タイマ処理タスクをIRAMに配置する | CONFIG_PLACE_CALLBACK_ON_IRAM | yes/no |
 
 ```c
 #if CONFIG_TARGET_HARDWARE_TIMER_GROUP_0
@@ -230,6 +240,11 @@ ESP_TIMER_TASK を指定した場合は、割り込みハンドラ内でコー�
 
 #define TIMER_CLOCK_DIVIDER 400
 #define TIMER_COUNTER_PERIOD ((uint64_t)100)
+#endif
+#if CONFIG_PLACE_CALLBACK_ON_IRAM
+#define CALLBACK_PLACE_ATTR IRAM_ATTR
+#else
+#define CALLBACK_PLACE_ATTR
 #endif
 
 static volatile int64_t last_timer_timestamp = 0;
