@@ -15,6 +15,7 @@
 #include "esp_wifi.h"
 #include "esp_event_loop.h"
 #include "esp_log.h"
+#include "driver/gpio.h"
 #include "nvs_flash.h"
 #include "driver/timer.h"
 #include "soc/timer_group_struct.h"
@@ -222,7 +223,7 @@ static IRAM_ATTR void hardware_timer_isr(void* arg)
     // Set timestamp
     if( interval_index < NUM_INTERVALS && intervals[interval_index].interval == 0 ) {
         isr_timestamp = timestamp;
-        intervals[interval_index].interval = timestamp - last_timer_timestamp;
+        intervals[interval_index].interval = last_timer_timestamp == 0 ? 0 : timestamp - last_timer_timestamp;
     }
     last_timer_timestamp = timestamp;
 
@@ -265,7 +266,7 @@ static CALLBACK_PLACE_ATTR void timer_task(void* arg)
         }
     }
 }
-#elif USE_TASK_DELAY
+#elif defined(USE_TASK_DELAY)
 
 static CALLBACK_PLACE_ATTR void timer_task(void* arg)
 {
@@ -287,7 +288,7 @@ static CALLBACK_PLACE_ATTR void timer_task(void* arg)
         last_timer_timestamp = timestamp;
     }
 }
-#elif USE_HR_TIMER
+#elif defined(USE_HR_TIMER)
 static IRAM_ATTR void timer_callback(void* arg)
 {    
     TaskHandle_t main_task = (TaskHandle_t)arg;
@@ -320,6 +321,14 @@ static void initialize_udp()
     udp_recv(udp_context, &udp_recv_handler, NULL);
 }
 
+static void isr_button_pressed(void* arg)
+{
+    bool* flag = (bool*)arg;
+    if( flag != NULL ) {
+        *flag = true;
+    }
+}
+
 void app_main()
 {
     //Initialize NVS
@@ -329,6 +338,20 @@ void app_main()
       ret = nvs_flash_init();
     }
     ESP_ERROR_CHECK(ret);
+    
+    
+    // Setup GPIO to read button station
+    volatile bool is_button_pressed;
+    ESP_ERROR_CHECK(gpio_install_isr_service(ESP_INTR_FLAG_IRAM));
+    gpio_config_t config_gpio_button;
+    config_gpio_button.pin_bit_mask = (1ull<<37);
+    config_gpio_button.mode = GPIO_MODE_INPUT;
+    config_gpio_button.pull_up_en = GPIO_PULLUP_ENABLE;
+    config_gpio_button.pull_down_en = GPIO_PULLDOWN_DISABLE;
+    config_gpio_button.intr_type = GPIO_INTR_NEGEDGE;
+    ESP_ERROR_CHECK(gpio_config(&config_gpio_button));
+    ESP_ERROR_CHECK(gpio_isr_handler_add(GPIO_NUM_37, isr_button_pressed, &is_button_pressed));
+
 #ifdef ENABLE_WIFI
     ESP_LOGI(TAG, "ESP_WIFI_MODE_STA");
     wifi_init_sta();
@@ -346,31 +369,21 @@ void app_main()
         .name = "TIMERSTAT",
     };
     ESP_ERROR_CHECK(esp_timer_create(&create_args, &handle));
-    ESP_ERROR_CHECK(esp_timer_start_periodic(handle, 1000));
+    ESP_ERROR_CHECK(esp_timer_start_periodic(handle, TIMER_COUNTER_PERIOD));
 #elif defined(USE_HARDWARE_TIMER)
     ESP_LOGI(TAG, "Use hardware timer, priority=%d, cpu=%d", CONFIG_HARDWARE_TIMER_TASK_PRIORITY, CONFIG_HARDWARE_TIMER_TASK_CPU);
     TaskHandle_t timer_task_handle = NULL;
     xTaskCreatePinnedToCore(timer_task, "HW_TIMER", 4096, xTaskGetCurrentTaskHandle(), CONFIG_HARDWARE_TIMER_TASK_PRIORITY, &timer_task_handle, CONFIG_HARDWARE_TIMER_TASK_CPU);
 #endif
     while(true) {
+        is_button_pressed = false;
+
         uint32_t notification_value = 0;
         xTaskNotifyWait(0, 1, &notification_value, portMAX_DELAY);
         if( interval_index < NUM_INTERVALS ) {
             continue;
         }
 
-#if CONFIG_DUMP_RAW_DATA
-        esp_log_level_set("*", ESP_LOG_NONE);
-        printf("DUMP BEGIN:\n");
-        for(uint32_t i = 0; i < NUM_INTERVALS; i++) {
-            printf("%d,%d,%d\n", i, intervals[i].delay, intervals[i].interval);
-            if( (i & 0xfff) == 0 ) {
-                vTaskDelay(1);
-            }
-        }
-        printf("DUMP END:\n");
-        esp_log_level_set("*", ESP_LOG_INFO);
-#else 
         float interval_sum_squared = 0;
         float interval_sum = 0;
         uint32_t interval_min = 0xffffffffu;
@@ -405,7 +418,19 @@ void app_main()
         ESP_LOGI("TIMER", "delay:    min = %u, max = %u, average: %f, variance: %f", delay_min, delay_max, delay_average, delay_variance);
         ESP_LOGI("TIMER", "interval: min = %u, max = %u, average: %f, variance: %f", interval_min, interval_max, interval_average, interval_variance);
         printRuntimeStats();
-#endif
+
+        if( is_button_pressed ) {
+            esp_log_level_set("*", ESP_LOG_NONE);
+            printf("DUMP BEGIN %llu:\n", esp_timer_get_time());
+            for(uint32_t i = 0; i < NUM_INTERVALS; i++) {
+                printf("%d,%d,%d\n", i, intervals[i].delay, intervals[i].interval);
+                if( (i & 0xfff) == 0 ) {
+                    vTaskDelay(1);
+                }
+            }
+            printf("DUMP END:\n");
+            esp_log_level_set("*", ESP_LOG_INFO);    
+        }
         memset(intervals, 0, sizeof(intervals));
         interval_index = 0;
     }
