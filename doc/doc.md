@@ -22,8 +22,14 @@ ESP32の開発環境 ESP-IDF 、および ESP-IDF の上に構築されている
 ### タイムスタンプ取得関数 esp_timer_get_time 
 
 ESP-IDFには、タイムスタンプを取得するAPIとして、 `esp_timer_get_time` が用意されています。esp_timer_get_time はESP32が起動してからの経過時間をマイクロ秒単位で返します。
+マイクロ秒単位のタイムスタンプを返すという仕様だけを見れば、測定に十分使えるように見えます。
+しかし、処理時間を測る場合、
 
-正確な時間間隔で処理できているかを確認するためには、十分な正確さで時刻を計測する必要があります。
+* `esp_timer_get_time` を呼び出してから実際のタイムスタンプの取得までどれくらいの時間がかかるか
+* `esp_time_get_time` の処理にかかる時間はどれくらいか
+
+の2点について、それぞれ十分に短い時間である必要があります。
+
 そこで、まずは esp_timer_get_time がどのように実装されているのかを確認します。
 
 ### esp_timer_get_time の実装
@@ -153,9 +159,124 @@ ESP32にはいくつかのハードウェア･タイマがあります。その
 
 ### 無線通信プログラム
 
-実験のために無線LANのアクセスポイントとして機能し、UDPで無線LANのクライアントに一定レートでデータを送信し続けるプログラムを作成します。
+実験用に、無線LANのアクセス・ポイントとして機能し、無線LANのクライアントに一定レートでデータを送信し続ける ESP32用 プログラムを作成します。
+ESP-IDFに付属しているサンプル `examples/wifi/getting_started/softAP` をもとに必要な機能を追加します。
 
+@lst:softAP_modification に実験用の無線LANアクセス・ポイント用プログラムを示します。
 
+処理の内容は大きく分けて以下の2つです。
+
+* M5StickCのボタンAの入力を監視し、ボタンAが押されるたびに UDP送信処理の有効・無効を切り替える
+* クライアントがアクセス・ポイントに接続している、かつUDP送信処理が有効な場合、およそ512[kiB/s]になるようにクライアントにUDPでデータを送信する。
+
+```{#lst:softAP_modification .c .numberLines caption="softAPプログラムの変更箇所"}
+static esp_err_t event_handler(void *ctx, system_event_t *event)
+{
+	switch(event->event_id) {
+	// (省略)
+	case SYSTEM_EVENT_AP_STAIPASSIGNED: // クライアントにIPアドレスを割り当てた
+		ESP_LOGI(TAG, "station:"IPSTR" assigned", IP2STR(&event->event_info.ap_staipassigned.ip));
+		// UDP送信先として接続したクライアントのIPアドレスを保存
+		client_address = event->event_info.ap_staipassigned.ip;
+		// クライアント接続フラグをセット
+		is_client_connected = true;
+		break;
+	default:
+		break;
+	}
+	return ESP_OK;
+}
+// (省略)
+void app_main()
+{
+	//Initialize NVS
+	esp_err_t ret = nvs_flash_init();
+	if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
+	  ESP_ERROR_CHECK(nvs_flash_erase());
+	  ret = nvs_flash_init();
+	}
+	ESP_ERROR_CHECK(ret);
+	
+	ESP_LOGI(TAG, "ESP_WIFI_MODE_AP");
+	wifi_init_softap();
+
+	// M5StickCの本体のボタンA(GPIO37)入力用にGPIOを初期化
+	gpio_config_t config_gpio_button;
+	config_gpio_button.pin_bit_mask = (1ull<<37);
+	config_gpio_button.mode = GPIO_MODE_INPUT;
+	config_gpio_button.pull_up_en = GPIO_PULLUP_ENABLE;
+	config_gpio_button.pull_down_en = GPIO_PULLDOWN_DISABLE;
+	config_gpio_button.intr_type = GPIO_INTR_DISABLE;
+	ESP_ERROR_CHECK(gpio_config(&config_gpio_button));
+
+	// UDP送信の準備
+	const uint16_t buffer_size = 10240;
+	udp_init();
+	struct udp_pcb* pcb = udp_new();  // lwIPのUDP処理コンテキストを作成
+	// 送信データのバッファを作成
+	struct pbuf* buf = pbuf_alloc(PBUF_TRANSPORT, buffer_size, PBUF_RAM);
+	// 送信バッファを0〜255のデータで埋める
+	for(uint16_t i = 0; i < buffer_size; i++) {
+		pbuf_put_at(buf, i, i);
+	}
+
+	// 最終送信時刻を初期化する
+	uint64_t start_time = esp_timer_get_time();
+	// 送信データ量を初期化する
+	size_t total_bytes_sent = 0;
+
+	bool transfer_enabled = true;
+	bool last_button_pressed = false;
+
+	while(true) {
+		// ボタンの状態を読み取る
+		bool is_button_pressed = gpio_get_level(GPIO_NUM_37) == 0;
+		if( !last_button_pressed && is_button_pressed ) {
+			// ボタンが押されたらUDP送信の有効・無効を切り替える
+			transfer_enabled = !transfer_enabled;
+			ESP_LOGI("MAIN", "transfer: %s", transfer_enabled ? "enabled" : "disabled");
+		}
+		last_button_pressed = is_button_pressed;
+
+		if( is_client_connected ) { // クライアントが接続している？
+			if( transfer_enabled ) {  // UDP送信が有効？
+				ip_addr_t address;
+				address.type = IPADDR_TYPE_V4;
+				address.u_addr.ip4 = client_address;
+
+        // 送信バッファのデータ (10240バイト) を送信
+				err_t err = udp_sendto(pcb, buf, &address, 10000);  
+				
+				if( err == 0 ) {
+          // 送信成功したなら送信バイト数を加算
+					total_bytes_sent += buffer_size;
+				}
+			}
+			uint64_t timestamp = esp_timer_get_time();
+			uint64_t elapsed_us = timestamp - start_time;
+			if( elapsed_us >= 1000000ul ) {
+				ESP_LOGI("MAIN", "transfer rate: %0.2lf", (total_bytes_sent*1000000.0)/elapsed_us);
+				start_time = timestamp;
+				total_bytes_sent = 0;
+			}
+		}
+    // 20[ms] 待つ
+		vTaskDelay(pdMS_TO_TICKS(20));
+	}
+}
+```
+
+### 実験の手順
+
+前述のアクセス・ポイント用プログラムを書き込んだ M5StickC と、この後説明するタイマ性能測定用プログラムを書き込んだ M5StickC を使って、以下の手順で測定を行います。
+
+1. アクセス・ポイント用 M5StickC の電源を入れ、アクセス・ポイントとして動作する状態にします。
+2. タイマ性能測定用 M5StickC の電源を入れます。測定結果が数回出力された安定したところの結果を `UDP通信あり` での測定結果として記録します。
+3. アクセス・ポイント用 M5StickC のボタンAを押し、UDP送信を停止します。
+4. 測定結果が数回出力された安定したところの結果を `UDP通信なし` での測定結果として記録します。
+5. アクセス・ポイント用 M5StickC の電源を切ります。
+6. タイマ性能測定用 M5StickC のログ出力で `retrying AP connection` と表示されている間の測定結果を記録し、 `アクセス・ポイント検索中` の測定結果として記録します。
+7. `retrying AP connection` が5回接続され、アクセス・ポイントの検索処理が停止してしばらくしたところの測定結果を記録し、 `無線接続なし` の測定結果として記録します。
 
 ## 実験その1: 高分解能タイマの性能
 
@@ -173,16 +294,34 @@ ESP-IDFの高分解能タイマの処理の周期の正確さがどれくらい�
 5. 16384回、周期処理を終えたら、(3))で通知を待機しているメインタスクに通知します。
 6. (4)で計測した結果をシリアル通信経由でターミナルに出力します。
 
-このプログラムを `a. 無線LAN通信なし`, `b. 無線LAN通信あり(アクセスポイントに接続のみ)` および `c. 無線LAN通信あり(PCから1[MB/s]くらいのレートでUDPパケット受信)` の2つの設定で実行して、(3)で測定した周期処理の間隔がどのように変化するかを測定しました。
+このプログラムを `a. 無線LAN通信なし`, `b. 無線LAN通信あり(アクセスポイントに接続のみ)` および `c. 無線LAN通信あり(500[kiB/s]くらいのレートでUDPパケット受信)` の2つの設定で実行して、(3)で測定した周期処理の間隔がどのように変化するかを測定しました。
 
 ### 測定結果
 
-以下に測定結果を示します。
+@fig:hrtimer_result に測定結果を示します。
+
+測定結果の種類とグラフ上の名称の対応は @tbl:result_item_name のとおりです。
+
+| 種類  |  グラフ上の名称 |
+|---|---|
+| UDP通信あり | udp |
+| UDP通信なし | noudp |
+| アクセス・ポイント検索中 | apscan |
+| 無線接続なし | nowifi |
+:{tbl:result_item_name}(測定結果の種類とグラフ上の名称)
+
+グラフの縦軸は、それぞれの測定結果ごとの周期処理の間隔を[us]単位で表しています。
+
+また、0〜2000 [us] の範囲を切り出したグラフを @fig:hrtimer_result_wo_outlier に示します。
+
+![高分解能タイマの測定結果](../log/hrtimer/hrtimer.png){@fig:hrtimer_result}
+
+![高分解能タイマの測定結果 (apscanの外れ値除外)](../log/hrtimer/hrtimer_range2000.png){@fig:hrtimer_result_wo_outlier}
 
 ### 結果：高分解能タイマは使い物にならない
 
-測定結果より、無線通信無効時はそれなりの正確さで周期処理を実行できています。
-一方、無線通信有効時は周期処理の間隔がかなり大きくずれています。これでは高分解能タイマを使う意味がありません。
+測定結果の `nowifi` より、無線通信無効時はそれなりの正確さで周期処理を実行できています。
+一方、無線通信有効時は周期処理の間隔がかなり大きくずれています。特にアクセス・ポイント検索処理中には`12,000[us]` の間が開く場合がありました。これでは高分解能タイマを使う意味がありません。
 
 なぜこのような結果になるのか、ESP-IDFの高分解能タイマの実装から読み解いてみます。
 
