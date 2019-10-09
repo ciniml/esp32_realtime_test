@@ -4514,12 +4514,7 @@
 4513,14,500
 4514,14,500
 4515,14,500
-4516,14,500[0;31mE (23155) task_wdt: Task watchdog got triggered. The following tasks did not reset the watchdog in time:[0m
-[0;31mE (23155) task_wdt:  - IDLE0 (CPU 0)[0m
-[0;31mE (23155) task_wdt: Tasks currently running:[0m
-[0;31mE (23155) task_wdt: CPU 0: main[0m
-[0;31mE (23155) task_wdt: CPU 1: IDLE1[0m
-
+4516,14,500
 4517,14,500
 4518,14,500
 4519,14,500
