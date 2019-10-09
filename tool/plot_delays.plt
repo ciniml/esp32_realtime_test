@@ -3,7 +3,7 @@ set datafile separator ","
 set xrange [0.5:4.4]
 set xtics (ARG2 1, ARG4 2, ARG6 3, ARG8 4)
 set xtics nomirror scale 0
-set ytics nomirror rangelimited
+set ytics mirror
 set parametric
 
 plot   ARG1 using (1):2 pt 1 title ARG2, \

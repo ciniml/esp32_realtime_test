@@ -9,7 +9,7 @@ clean:
 	-@$(RM) $(TARGETS)
 
 hwtimer_interval.$(EXT): $(CSV_ALL)
-	gnuplot -e "set terminal $(FORMAT) mono size 800,600;set output \"$@\"" -c ../../tool/plot_states.plt \
+	gnuplot -e "set terminal $(FORMAT) mono size 800,600;set output \"$@\";set yrange [0:1000]" -c ../../tool/plot_states.plt \
 		$(CSV_UDP)    "hwtimer (udp)" \
 		$(CSV_NOUDP)  "hwtimer (noudp)" \
 		$(CSV_APSCAN) "hwtimer (apscan)" \

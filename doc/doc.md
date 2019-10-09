@@ -25,7 +25,7 @@ ESP-IDFには、タイムスタンプを取得するAPIとして、 `esp_timer_g
 マイクロ秒単位のタイムスタンプを返すという仕様だけを見れば、測定に十分使えるように見えます。
 しかし、処理時間を測る場合、
 
-* `esp_timer_get_time` を呼び出してから実際のタイムスタンプの取得までどれくらいの時間がかかるか
+* `esp_timer_get_time` を呼び出してから `esp_time_get_time` の内部で実際のタイムスタンプの取得までどれくらいの時間がかかるか
 * `esp_time_get_time` の処理にかかる時間はどれくらいか
 
 の2点について、それぞれ十分に短い時間である必要があります。
@@ -48,7 +48,7 @@ esp_timer_impl_get_time は ESP-IDFの `components/esp32/esp_timer_esp32.c` で�
 
 このフリーランニング･カウンタは、ESP32のペリフェラル･バス (APB) のクロックである 80[MHz] でカウントしつづけているので、分解能は 1/80[us] です。
 
-esp_timer_impl_get_time内で呼び出されている `timer_overflow_happeded` 関数は、フリーランニング･カウンタのレジスタをいくつか呼んだ上で条件を満たすかどうかを返しています。
+esp_timer_impl_get_time内で呼び出されている `timer_overflow_happeded` 関数は、フリーランニング･カウンタのレジスタをいくつか読んだ上で条件を満たすかどうかを返しています。
 
 ESP32で使われているCPUコアである Xtensa LX6 の詳細な資料は入手出来ないため、CPUの命令ごとのサイクル数は正確には分かりませんが、少なくとも1命令あたり1CPUサイクルかかると仮定します。
 timer_overflow_happened および esp_timer_impl_get_time 関数はそれぞれ 40命令 と 29命令の機械語にコンパイルされることを確認しています。
@@ -509,6 +509,27 @@ void app_main()
 タイマ処理タスクの先頭で、 `timer_` で始まるESP-IDFのAPIを呼び出して、ハードウェア・タイマを初期化します。
 
 ### 実験の結果
+
+各動作パターンごとのハードウェア・タイマ割り込みの周期の測定結果を 
+@fig:hwtimer_pro_22_interval @fig:hwtimer_pro_24_interval @fig:hwtimer_app_22_interval @fig:hwtimer_app_24_interval に、ハードウェア・タイマ割り込みからタイマ処理タスクの遅延時間の測定結果を 
+@fig:hwtimer_pro_22_delay @fig:hwtimer_pro_24_delay @fig:hwtimer_app_22_delay @fig:hwtimer_app_24_delay 
+に示します。
+
+![ハードウェア・タイマのインターバル (PRO_CPU, 優先度22)](../log/hwtimer_pro_22/hwtimer_interval.png){@fig:hwtimer_pro_22_interval}
+
+![タイマ処理タスク遅延時間 (PRO_CPU, 優先度22)](../log/hwtimer_pro_22/hwtimer_delay.png){@fig:hwtimer_pro_22_delay}
+
+![ハードウェア・タイマのインターバル (PRO_CPU, 優先度24)](../log/hwtimer_pro_24/hwtimer_interval.png){@fig:hwtimer_pro_24_interval}
+
+![タイマ処理タスク遅延時間 (PRO_CPU, 優先度24)](../log/hwtimer_pro_24/hwtimer_delay.png){@fig:hwtimer_pro_24_delay}
+
+![ハードウェア・タイマのインターバル (APP_CPU, 優先度22)](../log/hwtimer_app_22/hwtimer_interval.png){@fig:hwtimer_app_22_interval}
+
+![タイマ処理タスク遅延時間 (APP_CPU, 優先度22)](../log/hwtimer_app_22/hwtimer_delay.png){@fig:hwtimer_app_22_delay}
+
+![ハードウェア・タイマのインターバル (APP_CPU, 優先度24)](../log/hwtimer_app_24/hwtimer_interval.png){@fig:hwtimer_app_24_interval}
+
+![タイマ処理タスク遅延時間 (APP_CPU, 優先度24)](../log/hwtimer_app_24/hwtimer_delay.png){@fig:hwtimer_app_24_delay}
 
 
 
