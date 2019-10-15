@@ -19,6 +19,6 @@ with open(input_path, 'r') as input_file:
     min_ = np.min(rows)
 
     if label is None:
-        print('|{0:0.0f}|{1:0.5f}|{2:0.0f}|{3:0.0f}|'.format(average, stddev, max_, min_))
+        print('|{0:0.0f}|{2:0.0f}|{3:0.0f}|'.format(average, stddev, max_, min_))
     else:
-        print('|{0}|{1:0.0f}|{2:0.5f}|{3:0.0f}|{4:0.0f}|'.format(label, average, stddev, max_, min_))
+        print('|{0}|{1:0.0f}|{3:0.0f}|{4:0.0f}|'.format(label, average, stddev, max_, min_))
