@@ -621,9 +621,9 @@ void app_main()
 |nowifi|500|550|450|
 : 高分解能タイマのインターバル {#tbl:hrtimer_interval}
 
-![高分解能タイマの測定結果](../log/hrtimer/hrtimer.png){@fig:hrtimer_result}
+![高分解能タイマの測定結果](../log/hrtimer/hrtimer.png){#fig:hrtimer_result}
 
-![高分解能タイマの測定結果 (apscanの外れ値除外)](../log/hrtimer/hrtimer_range2000.png){@fig:hrtimer_result_wo_outlier}
+![高分解能タイマの測定結果 (apscanの外れ値除外)](../log/hrtimer/hrtimer_range2000.png){#fig:hrtimer_result_wo_outlier}
 
 ### 結果：高分解能タイマは使い物にならない
 
@@ -681,7 +681,7 @@ ESP_TIMER_TASK を指定した場合は、割り込みハンドラ内でコー�
 |---|---|---|
 | タイマ処理タスクの優先度 | CONFIG_HARDWARE_TIMER_TASK_PRIORITY | 22, 24 |
 | タイマ処理タスクおよびタイマ割り込み処理のCPU | CONFIG_HARDWARE_TIMER_TASK_CPU | 0, 1 |
-:{タイマ処理タスクのパラメータ}(tbl:hwtimer_params)
+: タイマ処理タスクのパラメータ {#tbl:hwtimer_params}
 
 ```c
 #if CONFIG_TARGET_HARDWARE_TIMER_GROUP_0
@@ -813,21 +813,21 @@ void app_main()
 @fig:hwtimer_pro_22_delay @fig:hwtimer_pro_24_delay @fig:hwtimer_app_22_delay @fig:hwtimer_app_24_delay 
 にインターバルを処理内容ごとにプロットしたものを示します。
 
-![ハードウェア・タイマのインターバル (PRO_CPU, 優先度22)](../log/hwtimer_pro_22/hwtimer_interval.png){@fig:hwtimer_pro_22_interval}
+![ハードウェア・タイマのインターバル (PRO_CPU, 優先度22)](../log/hwtimer_pro_22/hwtimer_interval.png){#fig:hwtimer_pro_22_interval}
 
-![タイマ処理タスク遅延時間 (PRO_CPU, 優先度22)](../log/hwtimer_pro_22/hwtimer_delay.png){@fig:hwtimer_pro_22_delay}
+![タイマ処理タスク遅延時間 (PRO_CPU, 優先度22)](../log/hwtimer_pro_22/hwtimer_delay.png){#fig:hwtimer_pro_22_delay}
 
-![ハードウェア・タイマのインターバル (PRO_CPU, 優先度24)](../log/hwtimer_pro_24/hwtimer_interval.png){@fig:hwtimer_pro_24_interval}
+![ハードウェア・タイマのインターバル (PRO_CPU, 優先度24)](../log/hwtimer_pro_24/hwtimer_interval.png){#fig:hwtimer_pro_24_interval}
 
-![タイマ処理タスク遅延時間 (PRO_CPU, 優先度24)](../log/hwtimer_pro_24/hwtimer_delay.png){@fig:hwtimer_pro_24_delay}
+![タイマ処理タスク遅延時間 (PRO_CPU, 優先度24)](../log/hwtimer_pro_24/hwtimer_delay.png){#fig:hwtimer_pro_24_delay}
 
-![ハードウェア・タイマのインターバル (APP_CPU, 優先度22)](../log/hwtimer_app_22/hwtimer_interval.png){@fig:hwtimer_app_22_interval}
+![ハードウェア・タイマのインターバル (APP_CPU, 優先度22)](../log/hwtimer_app_22/hwtimer_interval.png){#fig:hwtimer_app_22_interval}
 
-![タイマ処理タスク遅延時間 (APP_CPU, 優先度22)](../log/hwtimer_app_22/hwtimer_delay.png){@fig:hwtimer_app_22_delay}
+![タイマ処理タスク遅延時間 (APP_CPU, 優先度22)](../log/hwtimer_app_22/hwtimer_delay.png){#fig:hwtimer_app_22_delay}
 
-![ハードウェア・タイマのインターバル (APP_CPU, 優先度24)](../log/hwtimer_app_24/hwtimer_interval.png){@fig:hwtimer_app_24_interval}
+![ハードウェア・タイマのインターバル (APP_CPU, 優先度24)](../log/hwtimer_app_24/hwtimer_interval.png){#fig:hwtimer_app_24_interval}
 
-![タイマ処理タスク遅延時間 (APP_CPU, 優先度24)](../log/hwtimer_app_24/hwtimer_delay.png){@fig:hwtimer_app_24_delay}
+![タイマ処理タスク遅延時間 (APP_CPU, 優先度24)](../log/hwtimer_app_24/hwtimer_delay.png){#fig:hwtimer_app_24_delay}
 
 | 動作パターン | 遅延 平均値[us] | 遅延 最大値[us] | 遅延 最小値[us] | インターバル 平均値[us] | インターバル 最大値[us] | インターバル 最小値[us] |
 |:----|---:|---:|---:|---:|---:|---:|---:|---:|

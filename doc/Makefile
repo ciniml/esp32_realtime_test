@@ -1,7 +1,7 @@
 .PHONY: all clean
 
-PANDOC := ~/.cabal/bin/pandoc
-PANDOC_CROSSREF := ~/.cabal/bin/pandoc-crossref
+PANDOC ?= pandoc
+PANDOC_CROSSREF ?= pandoc-crossref
 
 INPUT_MD := doc.md
 
