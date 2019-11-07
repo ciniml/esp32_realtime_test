@@ -14,11 +14,13 @@
 #include "esp_wifi.h"
 #include "esp_event_loop.h"
 #include "esp_log.h"
+#include "driver/gpio.h"
+
 #include "nvs_flash.h"
 
 #include "lwip/err.h"
 #include "lwip/sys.h"
-#include "lwip/sockets.h"
+#include "lwip/udp.h"
 
 /* The examples use WiFi configuration that you can set via 'make menuconfig'.
 
@@ -104,34 +106,57 @@ void app_main()
     ESP_LOGI(TAG, "ESP_WIFI_MODE_AP");
     wifi_init_softap();
 
-    int sock = socket(AF_INET, SOCK_DGRAM, 0);
-    static uint8_t data[1024];
+    // Setup GPIO to read button station
+    gpio_config_t config_gpio_button;
+    config_gpio_button.pin_bit_mask = (1ull<<37);
+    config_gpio_button.mode = GPIO_MODE_INPUT;
+    config_gpio_button.pull_up_en = GPIO_PULLUP_ENABLE;
+    config_gpio_button.pull_down_en = GPIO_PULLDOWN_DISABLE;
+    config_gpio_button.intr_type = GPIO_INTR_DISABLE;
+    ESP_ERROR_CHECK(gpio_config(&config_gpio_button));
+
+
+    const uint16_t buffer_size = 10240;
+    udp_init();
+    struct udp_pcb* pcb = udp_new();
+    struct pbuf* buf = pbuf_alloc(PBUF_TRANSPORT, buffer_size, PBUF_RAM);
+    for(uint16_t i = 0; i < buffer_size; i++) {
+        pbuf_put_at(buf, i, i);
+    }
 
     uint64_t start_time = esp_timer_get_time();
     size_t total_bytes_sent = 0;
 
-    while(true) {
-        if( is_client_connected ) {
-            struct sockaddr_in addr;
-            
-            memset(&addr, 0, sizeof(addr));
-            addr.sin_family = AF_INET;              /* アドレスファミリを設定する */
-            addr.sin_port = 10000;  /* ポート番号を設定する */
-            addr.sin_len = sizeof(addr);            /* アドレス情報の長さを設定する */
-            addr.sin_addr.s_addr = client_address.addr;
+    bool transfer_enabled = true;
+    bool last_button_pressed = false;
 
-            ssize_t bytes_sent = sendto(sock, data, sizeof(data), 0, (const struct sockaddr*)&addr, sizeof(addr));
-            if( bytes_sent > 0 ) {
-                total_bytes_sent += bytes_sent;
-            }
-            {
-                uint64_t timestamp = esp_timer_get_time();
-                uint64_t elapsed_us = timestamp - start_time;
-                if( elapsed_us >= 1000000ul ) {
-                    printf("transfer rate: %0.2lf\n", (total_bytes_sent*1000000.0)/elapsed_us);
-                    start_time = timestamp;
-                    total_bytes_sent = 0;
+    while(true) {
+        bool is_button_pressed = gpio_get_level(GPIO_NUM_37) == 0;
+        if( !last_button_pressed && is_button_pressed ) {
+            transfer_enabled = !transfer_enabled;
+            ESP_LOGI("MAIN", "transfer: %s", transfer_enabled ? "enabled" : "disabled");
+        }
+        last_button_pressed = is_button_pressed;
+
+        if( is_client_connected ) {
+            if( transfer_enabled ) {
+                ip_addr_t address;
+                address.type = IPADDR_TYPE_V4;
+                address.u_addr.ip4 = client_address;
+
+                err_t err = udp_sendto(pcb, buf, &address, 10000);
+                
+                if( err == 0 ) {
+                    total_bytes_sent += buffer_size;
                 }
+            }
+        
+            uint64_t timestamp = esp_timer_get_time();
+            uint64_t elapsed_us = timestamp - start_time;
+            if( elapsed_us >= 1000000ul ) {
+                ESP_LOGI("MAIN", "transfer rate: %0.2lf", (total_bytes_sent*1000000.0)/elapsed_us);
+                start_time = timestamp;
+                total_bytes_sent = 0;
             }
         }
         vTaskDelay(pdMS_TO_TICKS(20));
